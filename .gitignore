@@ -36,9 +36,6 @@ pnpm-debug.log*
 dist/
 build/
 
-# Runtime uploads (do not version user-generated files)
-uploads/
-
 # OS/Editor junk
 .DS_Store
 Thumbs.db
