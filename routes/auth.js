@@ -32,6 +32,9 @@ function createTransport() {
 			connectionTimeout: Number(process.env.SMTP_CONN_TIMEOUT || 10000),
 			greetingTimeout: Number(process.env.SMTP_GREET_TIMEOUT || 10000),
 			socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT || 15000),
+			tls: {
+				minVersion: 'TLSv1.2',
+			}
 		});
 	}
 	return nodemailer.createTransport({
@@ -40,6 +43,9 @@ function createTransport() {
 		connectionTimeout: Number(process.env.SMTP_CONN_TIMEOUT || 10000),
 		greetingTimeout: Number(process.env.SMTP_GREET_TIMEOUT || 10000),
 		socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT || 15000),
+		tls: {
+			minVersion: 'TLSv1.2',
+		}
 	});
 }
 
@@ -103,38 +109,33 @@ async function sendOtpEmail(to, code) {
 			<div style="margin-top: 18px; font-size: 12px; color: #aaa;">&copy; ${new Date().getFullYear()} RS Collections</div>
 		</div>
 	`;
-	// Prefer Resend API if configured (more reliable on some hosts)
-	if (process.env.RESEND_API_KEY) {
+	const smtpConfigured = !!(process.env.SMTP_HOST || process.env.SMTP_USER || process.env.GMAIL_USER);
+	if (smtpConfigured) {
+		const transporter = createTransport();
+		const fromHeader = buildFromHeader();
+		try {
+			await transporter.sendMail({
+				from: fromHeader,
+				to,
+				subject,
+				text,
+				html
+			});
+			return;
+		} catch (err) {
+			console.warn('OTP email send failed (SMTP):', err?.code || err?.message || err);
+			if (process.env.OTP_DEMO === 'true') {
+				console.log(`[OTP_DEMO] OTP for ${to}: ${code}`);
+				return;
+			}
+			throw err;
+		}
+	} else if (process.env.RESEND_API_KEY) {
+		// Only use Resend if SMTP is not configured
 		await sendViaResend(to, subject, html, text);
 		return;
-	}
-	const transporter = createTransport();
-	const fromHeader = buildFromHeader();
-	// Best-effort email send; do not block login flow on email failures in demo mode
-	try {
-		await transporter.sendMail({
-			from: fromHeader,
-			to,
-			subject,
-			text,
-			html
-		});
-	} catch (err) {
-		console.warn('OTP email send failed:', err?.code || err?.message || err);
-		// Fallback to Resend if available
-		if (process.env.RESEND_API_KEY) {
-			try {
-				await sendViaResend(to, subject, html, text);
-				return;
-			} catch (apiErr) {
-				console.warn('Resend fallback failed:', apiErr?.message || apiErr);
-			}
-		}
-		if (process.env.OTP_DEMO === 'true') {
-			console.log(`[OTP_DEMO] OTP for ${to}: ${code}`);
-			return;
-		}
-		throw err;
+	} else {
+		throw new Error('No email provider configured (set SMTP_* or RESEND_API_KEY).');
 	}
 }
 
