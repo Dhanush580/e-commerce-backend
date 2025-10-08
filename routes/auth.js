@@ -43,19 +43,36 @@ function createTransport() {
 	});
 }
 
+function extractEmail(raw) {
+	if (!raw) return null;
+	const m = raw.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+	return m ? m[0] : null;
+}
+
 function buildFromHeader() {
-	let fromAddr = process.env.MAIL_FROM || process.env.SMTP_USER || process.env.GMAIL_USER;
-	if (!fromAddr) return 'RS Collections <no-reply@example.com>';
-	// If MAIL_FROM already contains a display name with <email>, use as-is; otherwise wrap
-	if (/[<].+[@].+[>]/.test(fromAddr)) {
-		return fromAddr;
+	// Prefer specifically provided RESEND_FROM if valid; else gather from other envs
+	const raw = process.env.RESEND_FROM || process.env.MAIL_FROM || process.env.SMTP_USER || process.env.GMAIL_USER;
+	if (!raw) return 'RS Collections <onboarding@resend.dev>';
+	// If already in Name <email@domain> format and contains a valid email, pass through
+	const angleMatch = raw.match(/^(.*)<\s*([^>]+)\s*>\s*$/);
+	if (angleMatch) {
+		const email = extractEmail(angleMatch[2]);
+		if (email) return `${(angleMatch[1] || 'RS Collections').trim()} <${email}>`;
 	}
-	return `RS Collections <${fromAddr}>`;
+	// Otherwise, try to extract an email anywhere in the string
+	const email = extractEmail(raw);
+	if (email) {
+		const namePart = raw.replace(email, '').trim();
+		const displayName = namePart && !/[<>]/.test(namePart) ? namePart : 'RS Collections';
+		return `${displayName} <${email}>`;
+	}
+	// Fallback safe default for Resend testing
+	return 'RS Collections <pkveeragautham10@gmail.com>';
 }
 
 async function sendViaResend(to, subject, html, text) {
 	const apiKey = process.env.RESEND_API_KEY;
-	const from = process.env.RESEND_FROM || buildFromHeader();
+	const from = buildFromHeader();
 	if (!apiKey) throw new Error('RESEND_API_KEY not set');
 	const res = await fetch('https://api.resend.com/emails', {
 		method: 'POST',
