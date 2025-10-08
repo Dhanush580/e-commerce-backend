@@ -44,12 +44,30 @@ app.use('/auth/logout', logoutRouter);
 const userOrdersRouter = require('./userOrders');
 app.use('/user-orders', userOrdersRouter);
 // Middleware: CORS and JSON body parser (must be before all routes)
+function originMatches(origin, patterns) {
+	return patterns.some((p) => {
+		if (!p) return false;
+		if (p === '*') return true;
+		if (p.includes('*')) {
+			// Convert wildcard pattern to regex
+			const escaped = p.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+			const regex = new RegExp('^' + escaped.replace(/\\\*/g, '.*') + '$');
+			return regex.test(origin);
+		}
+		return origin === p;
+	});
+}
+
 app.use(cors({
 	origin: (origin, cb) => {
-		const allowed = (process.env.FRONTEND_ORIGIN || 'http://localhost:5173').split(',').map(s => s.trim());
+		const allowedPatterns = (process.env.FRONTEND_ORIGIN || 'http://localhost:5173')
+			.split(',')
+			.map((s) => s.trim())
+			.filter(Boolean);
 		// Allow non-browser tools with no origin
 		if (!origin) return cb(null, true);
-		if (allowed.includes(origin)) return cb(null, true);
+		if (originMatches(origin, allowedPatterns)) return cb(null, true);
+		console.warn(`[CORS] Blocked origin: ${origin}. Allowed: ${allowedPatterns.join(', ')}`);
 		return cb(null, false);
 	},
 	credentials: true,
@@ -154,7 +172,8 @@ app.post('/auth/admin-login', async (req, res) => {
 
 		// Generate JWT token
 		const token = jwt.sign({ sub: user._id, email: user.email }, process.env.JWT_SECRET || 'dev_secret', { expiresIn: '7d' });
-		res.cookie('auth', token, {
+		// Align with middleware which reads 'admin_auth' cookie
+		res.cookie('admin_auth', token, {
 			httpOnly: true,
 			sameSite: process.env.COOKIE_SAMESITE || 'lax',
 			secure: process.env.COOKIE_SECURE === 'true',
@@ -162,7 +181,7 @@ app.post('/auth/admin-login', async (req, res) => {
 		});
 
 
-		return res.json({ message: 'Admin login successful', user: { id: user._id, email: user.email, role: user.role } });
+	return res.json({ message: 'Admin login successful', user: { id: user._id, email: user.email, role: user.role } });
 	} catch (err) {
 		console.error('admin login error', err);
 		return res.status(500).json({ error: 'Login failed' });

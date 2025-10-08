@@ -3,9 +3,11 @@ const router = express.Router();
 
 // POST /auth/logout
 router.post('/logout', (req, res) => {
-	// Clear the user_auth cookie (and admin_auth for safety)
-	res.clearCookie('user_auth', { httpOnly: true, sameSite: 'lax', secure: !!process.env.COOKIE_SECURE });
-	res.clearCookie('admin_auth', { httpOnly: true, sameSite: 'lax', secure: !!process.env.COOKIE_SECURE });
+	// Clear auth cookies; mirror runtime flags for cross-origin
+	const sameSite = process.env.COOKIE_SAMESITE || 'lax';
+	const secure = process.env.COOKIE_SECURE === 'true';
+	res.clearCookie('user_auth', { httpOnly: true, sameSite, secure });
+	res.clearCookie('admin_auth', { httpOnly: true, sameSite, secure });
 	return res.json({ message: 'Logged out successfully' });
 });
 const jwt = require('jsonwebtoken');
