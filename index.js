@@ -11,6 +11,7 @@ const nodemailer = require('nodemailer');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const { createImageRouter } = require('./utils/gridfs');
 
 const authenticateAdmin = require('./middlewares/authenticateAdmin');
 const Order = require('./models/Order');
@@ -20,6 +21,8 @@ const Admin = require('./models/Admin');
 
 
 const app = express();
+// Trust Render/Vercel proxies so secure cookies work behind HTTPS proxies
+app.set('trust proxy', 1);
 
 // ---- MongoDB connection event logs ----
 const dbConn = mongoose.connection;
@@ -42,15 +45,42 @@ const userOrdersRouter = require('./userOrders');
 app.use('/user-orders', userOrdersRouter);
 // Middleware: CORS and JSON body parser (must be before all routes)
 app.use(cors({
-	origin: process.env.FRONTEND_ORIGIN || 'http://localhost:5173',
+	origin: (origin, cb) => {
+		const allowed = (process.env.FRONTEND_ORIGIN || 'http://localhost:5173').split(',').map(s => s.trim());
+		// Allow non-browser tools with no origin
+		if (!origin) return cb(null, true);
+		if (allowed.includes(origin)) return cb(null, true);
+		return cb(null, false);
+	},
 	credentials: true,
 }));
+
+// Health check for Render
+app.get('/', (req, res) => res.send('OK'));
 
 app.use(express.json());
 app.use(cookieParser());
 
-// Serve uploads folder for product images
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// Image serving routes
+// 1) New: Serve images from MongoDB GridFS under /images/:id
+app.use('/images', createImageRouter());
+
+// 2) Back-compat: if products still reference /uploads/xyz, serve those files if present.
+//    Also, if file not found locally, attempt to parse filename as GridFS id and proxy.
+app.use('/uploads', async (req, res, next) => {
+	const localPath = path.join(__dirname, 'uploads', req.path.replace(/^\//, ''));
+	fs.stat(localPath, (err, stat) => {
+		if (!err && stat && stat.isFile()) {
+			return express.static(path.join(__dirname, 'uploads'))(req, res, next);
+		}
+		// If not found locally, try as GridFS id shim: /uploads/<gridfsId>
+		const maybeId = req.path.replace(/^\//, '').split('.')[0];
+		if (/^[a-f\d]{24}$/i.test(maybeId)) {
+			return res.redirect(302, `/images/${maybeId}`);
+		}
+		return next();
+	});
+});
 
 // Orders routes moved to routes/orders.js
 const ordersRouter = require('./routes/orders');
@@ -126,8 +156,8 @@ app.post('/auth/admin-login', async (req, res) => {
 		const token = jwt.sign({ sub: user._id, email: user.email }, process.env.JWT_SECRET || 'dev_secret', { expiresIn: '7d' });
 		res.cookie('auth', token, {
 			httpOnly: true,
-			sameSite: 'lax',
-			secure: !!process.env.COOKIE_SECURE,
+			sameSite: process.env.COOKIE_SAMESITE || 'lax',
+			secure: process.env.COOKIE_SECURE === 'true',
 			maxAge: 7 * 24 * 60 * 60 * 1000,
 		});
 

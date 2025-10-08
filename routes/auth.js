@@ -106,12 +106,12 @@ router.post('/verify-otp', async (req, res) => {
 				// Generate JWT token
 				const token = jwt.sign({ sub: user._id, email: user.email }, process.env.JWT_SECRET || 'dev_secret', { expiresIn: '7d' });
 				// Set user_auth cookie
-				res.cookie('user_auth', token, {
-					httpOnly: true,
-					sameSite: 'lax',
-					secure: !!process.env.COOKIE_SECURE,
-					maxAge: 7 * 24 * 60 * 60 * 1000,
-				});
+					res.cookie('user_auth', token, {
+						httpOnly: true,
+						sameSite: process.env.COOKIE_SAMESITE || 'lax',
+						secure: process.env.COOKIE_SECURE === 'true',
+						maxAge: 7 * 24 * 60 * 60 * 1000,
+					});
 				return res.json({ message: 'OTP verified', user: { id: user._id, email: user.email, role: user.role } });
 	} catch (err) {
 		console.error('verify-otp error', err);
@@ -149,12 +149,12 @@ router.post('/setup-admin', async (req, res) => {
 			});
 		}
 		const token = jwt.sign({ sub: user._id, email: user.email }, process.env.JWT_SECRET || 'dev_secret', { expiresIn: '7d' });
-		res.cookie('admin_auth', token, {
-			httpOnly: true,
-			sameSite: 'lax',
-			secure: !!process.env.COOKIE_SECURE,
-			maxAge: 7 * 24 * 60 * 60 * 1000,
-		});
+			res.cookie('admin_auth', token, {
+				httpOnly: true,
+				sameSite: process.env.COOKIE_SAMESITE || 'lax',
+				secure: process.env.COOKIE_SECURE === 'true',
+				maxAge: 7 * 24 * 60 * 60 * 1000,
+			});
 		return res.json({ message: 'Admin setup complete', user: { id: user._id, email: user.email, role: user.role } });
 	} catch (err) {
 		console.error('admin setup error', err);
@@ -186,12 +186,12 @@ router.post('/admin-login', async (req, res) => {
 			await user.save();
 		}
 		const token = jwt.sign({ sub: user._id, email: user.email }, process.env.JWT_SECRET || 'dev_secret', { expiresIn: '7d' });
-		res.cookie('admin_auth', token, {
-			httpOnly: true,
-			sameSite: 'lax',
-			secure: !!process.env.COOKIE_SECURE,
-			maxAge: 7 * 24 * 60 * 60 * 1000,
-		});
+			res.cookie('admin_auth', token, {
+				httpOnly: true,
+				sameSite: process.env.COOKIE_SAMESITE || 'lax',
+				secure: process.env.COOKIE_SECURE === 'true',
+				maxAge: 7 * 24 * 60 * 60 * 1000,
+			});
 		return res.json({ message: 'Admin login successful', user: { id: user._id, email: user.email, role: user.role } });
 	} catch (err) {
 		console.error('admin login error', err);

@@ -3,6 +3,25 @@ const router = express.Router();
 const Product = require('../models/Product');
 const Order = require('../models/Order');
 
+// Helper to normalize image URLs (prefer GridFS base if ID-like paths are present)
+function normalizeImageUrls(doc, baseUrl) {
+	if (!doc) return doc;
+	const out = doc.toObject ? doc.toObject() : { ...doc };
+	if (Array.isArray(out.images)) {
+		out.images = out.images.map((u) => {
+			if (typeof u !== 'string') return u;
+			// If already absolute http(s) URL, keep
+			if (/^https?:\/\//i.test(u)) return u;
+			// If looks like legacy '/uploads/<id>' or '/uploads/<name>', try to keep as is but absolute
+			if (u.startsWith('/uploads/')) return `${baseUrl}${u}`;
+			// If looks like a bare ObjectId, convert to /images/:id
+			if (/^[a-f\d]{24}$/i.test(u)) return `${baseUrl}/images/${u}`;
+			return u;
+		});
+	}
+	return out;
+}
+
 // GET /products (list, with optional filters)
 router.get('/', async (req, res) => {
 	try {
@@ -18,11 +37,13 @@ router.get('/', async (req, res) => {
 				query.subCategory = subCategory;
 			}
 		}
-		const products = await Product.find(query)
+			const productsRaw = await Product.find(query)
 			.sort({ createdAt: -1 })
 			.limit(limit * 1)
 			.skip((page - 1) * limit)
 			.select('productId name images price category subCategory description inStock createdAt');
+			const baseUrl = process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`;
+			const products = productsRaw.map(p => normalizeImageUrls(p, baseUrl));
 		const total = await Product.countDocuments(query);
 		return res.json({
 			products,
@@ -59,12 +80,14 @@ router.get('/best-sellers', async (req, res) => {
 		const agg = await Order.aggregate(pipeline);
 		const ids = agg.map(a => a._id).filter(Boolean);
 		// Fetch product details for those ids (match by productId or _id)
-		const products = await Product.find({
+			const productsRaw = await Product.find({
 			$or: [
 				{ productId: { $in: ids } },
 				{ _id: { $in: ids.filter(v => /^[a-fA-F0-9]{24}$/.test(String(v))) } }
 			]
 		}).select('productId name images price category subCategory description inStock createdAt');
+			const baseUrl = process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`;
+			const products = productsRaw.map(p => normalizeImageUrls(p, baseUrl));
 
 		// Map results preserving order by agg
 		const productMap = new Map();
@@ -317,7 +340,8 @@ router.get('/:productId', async (req, res) => {
 		if (!product) {
 			return res.status(404).json({ error: 'Product not found' });
 		}
-		return res.json({ product });
+			const baseUrl = process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`;
+			return res.json({ product: normalizeImageUrls(product, baseUrl) });
 	} catch (err) {
 		console.error('Get single product error:', err);
 		return res.status(500).json({ error: 'Failed to fetch product' });

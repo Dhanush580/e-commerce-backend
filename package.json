@@ -6,6 +6,8 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
+    "migrate:images": "node scripts/migrate_uploads_to_gridfs.js",
+    "rewrite:image-base": "node scripts/rewrite_image_base.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

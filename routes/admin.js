@@ -5,6 +5,7 @@ const Product = require('../models/Product');
 const Order = require('../models/Order');
 const authenticateAdmin = require('../middlewares/authenticateAdmin');
 const upload = require('../config/multer');
+const { uploadBuffer } = require('../utils/gridfs');
 
 // Admin dashboard analytics (total orders, etc)
 router.get('/dashboard', authenticateAdmin, async (req, res) => {
@@ -24,12 +25,17 @@ router.post('/upload-images', authenticateAdmin, upload.array('images', 10), asy
 		if (!req.files || req.files.length === 0) {
 			return res.status(400).json({ error: 'No image files provided' });
 		}
-		const baseUrl = process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`;
-		const imageUrls = req.files.map(file => `${baseUrl}/uploads/${file.filename}`);
+			// Save to GridFS and return relative /images/:id URLs
+			const ids = [];
+		for (const file of req.files) {
+			const id = await uploadBuffer(file.buffer, file.originalname, file.mimetype);
+			ids.push(id);
+		}
+			const imageUrls = ids.map(id => `/images/${id}`);
 		res.json({
 			success: true,
 			imageUrls: imageUrls,
-			filenames: req.files.map(f => f.filename),
+			ids,
 		});
 	} catch (error) {
 		console.error('Image upload error:', error);
@@ -43,14 +49,35 @@ router.post('/upload-image', authenticateAdmin, upload.single('image'), async (r
 		if (!req.file) {
 			return res.status(400).json({ error: 'No image file provided' });
 		}
-		const baseUrl = process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`;
-		const imageUrl = `${baseUrl}/uploads/${req.file.filename}`;
-		return res.json({ success: true, imageUrl });
+		const id = await uploadBuffer(req.file.buffer, req.file.originalname, req.file.mimetype);
+			const imageUrl = `/images/${id}`;
+		return res.json({ success: true, imageUrl, id });
 	} catch (error) {
 		console.error('Single image upload error:', error);
 		return res.status(500).json({ error: 'Failed to upload image' });
 	}
 });
+
+// Helper to normalize incoming image URLs before storing
+function normalizeIncomingImages(images, req) {
+	const baseUrl = (process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
+	return (images || []).map((u) => {
+		if (typeof u !== 'string') return u;
+		// If relative /images or /uploads keep as is
+		if (u.startsWith('/images/') || u.startsWith('/uploads/')) return u;
+		// If bare ObjectId, convert to /images/:id
+		if (/^[a-f\d]{24}$/i.test(u)) return `/images/${u}`;
+		// If absolute http(s) to our own base with /images, strip base
+		try {
+			const url = new URL(u);
+			if ((baseUrl.startsWith(url.origin)) && url.pathname.startsWith('/images/')) {
+				return url.pathname;
+			}
+		} catch {}
+		// Otherwise keep original (could be external CDN or data URL)
+		return u;
+	});
+}
 
 // Add new product (Admin only)
 router.post('/products', authenticateAdmin, async (req, res) => {
@@ -66,7 +93,7 @@ router.post('/products', authenticateAdmin, async (req, res) => {
 		const product = await Product.create({
 			productId,
 			name,
-			images,
+				images: normalizeIncomingImages(images, req),
 			price,
 			category,
 			subCategory: subCategory || null,
@@ -137,7 +164,7 @@ router.put('/products/:productId', authenticateAdmin, async (req, res) => {
 			return res.status(404).json({ error: 'Product not found' });
 		}
 		if (name !== undefined) product.name = name;
-		if (images !== undefined) product.images = images;
+		if (images !== undefined) product.images = normalizeIncomingImages(images, req);
 		if (price !== undefined) product.price = price;
 		if (category !== undefined) product.category = category;
 		if (subCategory !== undefined) product.subCategory = subCategory || null;
