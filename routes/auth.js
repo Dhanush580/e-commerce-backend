@@ -28,16 +28,52 @@ function createTransport() {
 				user: process.env.SMTP_USER,
 				pass: process.env.SMTP_PASS,
 			},
+			// Helpful timeouts to fail fast instead of hanging
+			connectionTimeout: Number(process.env.SMTP_CONN_TIMEOUT || 10000),
+			greetingTimeout: Number(process.env.SMTP_GREET_TIMEOUT || 10000),
+			socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT || 15000),
 		});
 	}
 	return nodemailer.createTransport({
 		service: 'gmail',
 		auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_PASS },
+		connectionTimeout: Number(process.env.SMTP_CONN_TIMEOUT || 10000),
+		greetingTimeout: Number(process.env.SMTP_GREET_TIMEOUT || 10000),
+		socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT || 15000),
 	});
 }
 
+function buildFromHeader() {
+	let fromAddr = process.env.MAIL_FROM || process.env.SMTP_USER || process.env.GMAIL_USER;
+	if (!fromAddr) return 'RS Collections <no-reply@example.com>';
+	// If MAIL_FROM already contains a display name with <email>, use as-is; otherwise wrap
+	if (/[<].+[@].+[>]/.test(fromAddr)) {
+		return fromAddr;
+	}
+	return `RS Collections <${fromAddr}>`;
+}
+
+async function sendViaResend(to, subject, html, text) {
+	const apiKey = process.env.RESEND_API_KEY;
+	const from = process.env.RESEND_FROM || buildFromHeader();
+	if (!apiKey) throw new Error('RESEND_API_KEY not set');
+	const res = await fetch('https://api.resend.com/emails', {
+		method: 'POST',
+		headers: {
+			'Authorization': `Bearer ${apiKey}`,
+			'Content-Type': 'application/json',
+		},
+		body: JSON.stringify({ from, to, subject, html, text })
+	});
+	if (!res.ok) {
+		const msg = await res.text().catch(() => res.statusText);
+		throw new Error(`Resend API error: ${res.status} ${msg}`);
+	}
+}
+
 async function sendOtpEmail(to, code) {
-	const transporter = createTransport();
+	const subject = 'Your RS Collections OTP';
+	const text = `Thanks for using RS Collections jewellery website.\nYour OTP code is: ${code}`;
 	const html = `
 		<div style="font-family: Arial, sans-serif; max-width: 420px; margin: 0 auto; border: 1px solid #eee; border-radius: 10px; box-shadow: 0 2px 8px #eee; padding: 24px;">
 			<h2 style="color: #0a7d4d; margin-bottom: 8px;">RS Collections</h2>
@@ -50,14 +86,39 @@ async function sendOtpEmail(to, code) {
 			<div style="margin-top: 18px; font-size: 12px; color: #aaa;">&copy; ${new Date().getFullYear()} RS Collections</div>
 		</div>
 	`;
-	const fromAddr = process.env.MAIL_FROM || process.env.SMTP_USER || process.env.GMAIL_USER;
-	await transporter.sendMail({
-		from: `RS Collections <${fromAddr}>`,
-		to,
-		subject: 'Your RS Collections OTP',
-		text: `Thanks for using RS Collections jewellery website.\nYour OTP code is: ${code}`,
-		html
-	});
+	// Prefer Resend API if configured (more reliable on some hosts)
+	if (process.env.RESEND_API_KEY) {
+		await sendViaResend(to, subject, html, text);
+		return;
+	}
+	const transporter = createTransport();
+	const fromHeader = buildFromHeader();
+	// Best-effort email send; do not block login flow on email failures in demo mode
+	try {
+		await transporter.sendMail({
+			from: fromHeader,
+			to,
+			subject,
+			text,
+			html
+		});
+	} catch (err) {
+		console.warn('OTP email send failed:', err?.code || err?.message || err);
+		// Fallback to Resend if available
+		if (process.env.RESEND_API_KEY) {
+			try {
+				await sendViaResend(to, subject, html, text);
+				return;
+			} catch (apiErr) {
+				console.warn('Resend fallback failed:', apiErr?.message || apiErr);
+			}
+		}
+		if (process.env.OTP_DEMO === 'true') {
+			console.log(`[OTP_DEMO] OTP for ${to}: ${code}`);
+			return;
+		}
+		throw err;
+	}
 }
 
 function generateOtp() {
@@ -75,8 +136,15 @@ router.post('/request-otp', async (req, res) => {
 		const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 min
 		await Otp.deleteMany({ email });
 		await Otp.create({ email, code, expiresAt });
-		await sendOtpEmail(email, code);
-		return res.json({ message: 'OTP sent' });
+		try {
+			await sendOtpEmail(email, code);
+			return res.json({ message: 'OTP sent' });
+		} catch (err) {
+			if (process.env.OTP_DEMO === 'true') {
+				return res.json({ message: 'OTP sent (demo mode)' });
+			}
+			throw err;
+		}
 	} catch (err) {
 		console.error('request-otp error', err);
 		return res.status(500).json({ error: 'Failed to send OTP' });
@@ -88,6 +156,21 @@ router.post('/verify-otp', async (req, res) => {
 	try {
 		const { email, code } = req.body || {};
 		if (!email || !code) return res.status(400).json({ errors: [{ msg: 'Email and code are required' }] });
+		// Demo fallback: accept universal code when enabled
+		if (process.env.OTP_DEMO === 'true' && code === '123456') {
+			let user = await User.findOne({ email });
+			if (!user) {
+				user = await User.create({ email, role: 'user', wishlist: [], cart: [], orders: [], addresses: [] });
+			}
+			const token = jwt.sign({ sub: user._id, email: user.email }, process.env.JWT_SECRET || 'dev_secret', { expiresIn: '7d' });
+			res.cookie('user_auth', token, {
+				httpOnly: true,
+				sameSite: process.env.COOKIE_SAMESITE || 'lax',
+				secure: process.env.COOKIE_SECURE === 'true',
+				maxAge: 7 * 24 * 60 * 60 * 1000,
+			});
+			return res.json({ message: 'OTP verified (demo mode)', user: { id: user._id, email: user.email, role: user.role } });
+		}
 		const entry = await Otp.findOne({ email });
 		if (!entry) return res.status(400).json({ error: 'OTP not found or expired' });
 		if (entry.expiresAt < new Date()) {
@@ -245,8 +328,15 @@ router.post('/resend-otp', async (req, res) => {
 		const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
 		await Otp.deleteMany({ email });
 		await Otp.create({ email, code, expiresAt });
-		await sendOtpEmail(email, code);
-		return res.json({ message: 'OTP resent' });
+		try {
+			await sendOtpEmail(email, code);
+			return res.json({ message: 'OTP resent' });
+		} catch (err) {
+			if (process.env.OTP_DEMO === 'true') {
+				return res.json({ message: 'OTP resent (demo mode)' });
+			}
+			throw err;
+		}
 	} catch (err) {
 		console.error('resend-otp error', err);
 		return res.status(500).json({ error: 'Failed to resend OTP' });
