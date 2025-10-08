@@ -1,15 +1,10 @@
 // backend/userOrders.js
 
 const express = require('express');
-const cors = require('cors');
 const router = express.Router();
 const User = require('./models/User');
 
-// Apply CORS to this router
-router.use(cors({
-  origin: process.env.FRONTEND_ORIGIN || 'http://localhost:5173',
-  credentials: true,
-}));
+// CORS is applied globally in index.js; avoid setting per-router CORS to prevent duplicate headers
 
 
 // Get orders for a specific user (from embedded array)

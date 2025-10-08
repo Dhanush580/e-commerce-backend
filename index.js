@@ -74,6 +74,24 @@ app.use(cors({
 	credentials: true,
 }));
 
+// Ensure only a single Access-Control-Allow-Origin header is present and set Vary: Origin
+app.use((req, res, next) => {
+	const reqOrigin = req.headers.origin;
+	const current = res.getHeader('Access-Control-Allow-Origin');
+	if (reqOrigin && current) {
+		// Override any comma-separated or duplicate header with the actual request origin
+		res.setHeader('Access-Control-Allow-Origin', reqOrigin);
+	}
+	// Help caches serve the right variant per Origin
+	const vary = res.getHeader('Vary');
+	if (!vary) {
+		res.setHeader('Vary', 'Origin');
+	} else if (!String(vary).includes('Origin')) {
+		res.setHeader('Vary', String(vary) + ', Origin');
+	}
+	next();
+});
+
 // Health check for Render
 app.get('/', (req, res) => res.send('OK'));
 
