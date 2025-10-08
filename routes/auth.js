@@ -24,6 +24,7 @@ function createTransport() {
 			host: process.env.SMTP_HOST,
 			port: Number(process.env.SMTP_PORT || 587),
 			secure: process.env.SMTP_SECURE === 'true',
+			requireTLS: process.env.SMTP_REQUIRE_TLS === 'true',
 			auth: {
 				user: process.env.SMTP_USER,
 				pass: process.env.SMTP_PASS,
@@ -55,30 +56,48 @@ function extractEmail(raw) {
 	return m ? m[0] : null;
 }
 
-function buildFromHeader() {
-	// Prefer specifically provided RESEND_FROM if valid; else gather from other envs
-	const raw = process.env.RESEND_FROM || process.env.MAIL_FROM || process.env.SMTP_USER || process.env.GMAIL_USER;
-	if (!raw) return 'RS Collections <onboarding@resend.dev>';
-	// If already in Name <email@domain> format and contains a valid email, pass through
+// Build From header for SMTP (use user's configured mailbox)
+function buildSmtpFromHeader() {
+	const raw = process.env.MAIL_FROM || process.env.SMTP_USER || process.env.GMAIL_USER;
+	if (!raw) return 'RS Collections <no-reply@example.com>';
 	const angleMatch = raw.match(/^(.*)<\s*([^>]+)\s*>\s*$/);
 	if (angleMatch) {
 		const email = extractEmail(angleMatch[2]);
 		if (email) return `${(angleMatch[1] || 'RS Collections').trim()} <${email}>`;
 	}
-	// Otherwise, try to extract an email anywhere in the string
 	const email = extractEmail(raw);
 	if (email) {
 		const namePart = raw.replace(email, '').trim();
 		const displayName = namePart && !/[<>]/.test(namePart) ? namePart : 'RS Collections';
 		return `${displayName} <${email}>`;
 	}
-	// Fallback safe default for Resend testing
-	return 'RS Collections <pkveeragautham10@gmail.com>';
+	return 'RS Collections <no-reply@example.com>';
+}
+
+// Build From header for Resend (safe default uses onboarding domain to avoid 403)
+function buildResendFromHeader() {
+	const raw = process.env.RESEND_FROM || process.env.MAIL_FROM;
+	// If user specified RESEND_FROM, prefer it
+	if (raw) {
+		const angleMatch = raw.match(/^(.*)<\s*([^>]+)\s*>\s*$/);
+		if (angleMatch) {
+			const email = extractEmail(angleMatch[2]);
+			if (email) return `${(angleMatch[1] || 'RS Collections').trim()} <${email}>`;
+		}
+		const email = extractEmail(raw);
+		if (email) {
+			const namePart = raw.replace(email, '').trim();
+			const displayName = namePart && !/[<>]/.test(namePart) ? namePart : 'RS Collections';
+			return `${displayName} <${email}>`;
+		}
+	}
+	// Safe test sender for Resend if custom domain not verified
+	return 'RS Collections <onboarding@resend.dev>';
 }
 
 async function sendViaResend(to, subject, html, text) {
 	const apiKey = process.env.RESEND_API_KEY;
-	const from = buildFromHeader();
+	const from = buildResendFromHeader();
 	if (!apiKey) throw new Error('RESEND_API_KEY not set');
 	const res = await fetch('https://api.resend.com/emails', {
 		method: 'POST',
@@ -112,7 +131,7 @@ async function sendOtpEmail(to, code) {
 	const smtpConfigured = !!(process.env.SMTP_HOST || process.env.SMTP_USER || process.env.GMAIL_USER);
 	if (smtpConfigured) {
 		const transporter = createTransport();
-		const fromHeader = buildFromHeader();
+		const fromHeader = buildSmtpFromHeader();
 		try {
 			await transporter.sendMail({
 				from: fromHeader,
@@ -124,6 +143,16 @@ async function sendOtpEmail(to, code) {
 			return;
 		} catch (err) {
 			console.warn('OTP email send failed (SMTP):', err?.code || err?.message || err);
+			// Fallbacks on connection timeouts or connection failures
+			const transient = ['ETIMEDOUT', 'ECONNECTION', 'ETIMEOUT', 'ESOCKET', 'ECONNREFUSED'];
+			if (process.env.RESEND_API_KEY && transient.includes(err?.code)) {
+				try {
+					await sendViaResend(to, subject, html, text);
+					return;
+				} catch (e2) {
+					console.warn('Resend fallback failed:', e2?.message || e2);
+				}
+			}
 			if (process.env.OTP_DEMO === 'true') {
 				console.log(`[OTP_DEMO] OTP for ${to}: ${code}`);
 				return;
