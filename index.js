@@ -49,9 +49,10 @@ function originMatches(origin, patterns) {
 		if (!p) return false;
 		if (p === '*') return true;
 		if (p.includes('*')) {
-			// Convert wildcard pattern to regex
-			const escaped = p.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
-			const regex = new RegExp('^' + escaped.replace(/\\\*/g, '.*') + '$');
+			// Convert wildcard pattern to regex: escape regex chars then turn '*' into '.*'
+			const escaped = p.replace(/[-\/\\^$+?.()|[\]{}]/g, '\\$&');
+			const patternRegex = '^' + escaped.replace(/\*/g, '.*') + '$';
+			const regex = new RegExp(patternRegex);
 			return regex.test(origin);
 		}
 		return origin === p;
